@@ -152,6 +152,10 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_RequestedItemID)
 	FName RequestedItemID = NAME_None;
 
+	/** Cached display name, replicated so clients don't need ShopInventory */
+	UPROPERTY(Replicated)
+	FString Rep_DisplayName;
+
 	UPROPERTY(Replicated)
 	bool bHasBeenAttended = false;
 
@@ -185,6 +189,9 @@ private:
 	// Local snap state (server drives, client reads replicated version)
 	bool bIsSnapping = false;
 	FVector SnapTargetLocation = FVector::ZeroVector;
+
+	/** Client-side position tracking for animation delta fallback */
+	FVector LastClientPosition = FVector::ZeroVector;
 
 	static int32 GlobalAttendCounter;
 

@@ -46,6 +46,7 @@ void ANPCCustomer::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(ANPCCustomer, CurrentState);
 	DOREPLIFETIME(ANPCCustomer, RequestedItemID);
+	DOREPLIFETIME(ANPCCustomer, Rep_DisplayName);
 	DOREPLIFETIME(ANPCCustomer, bHasBeenAttended);
 	DOREPLIFETIME(ANPCCustomer, AttendOrder);
 	DOREPLIFETIME(ANPCCustomer, Rep_SlotIndex);
@@ -126,9 +127,7 @@ void ANPCCustomer::UpdateAnimationState()
 	float Speed = Vel.Size2D();
 	bool bMoving = Speed > 10.0f;
 
-	// During smooth snap, SetActorLocation doesn't update velocity,
-	// so force animation to show walking based on snap state.
-	// On clients, use the replicated snap state.
+	// During snap, force walk animation using replicated snap state
 	const bool bCurrentlySnapping = HasAuthority() ? bIsSnapping : Rep_IsSnapping;
 	const FVector CurrentSnapTarget = HasAuthority() ? SnapTargetLocation : Rep_SnapTarget;
 
@@ -140,6 +139,20 @@ void ANPCCustomer::UpdateAnimationState()
 			Speed = SnapSpeed;
 			bMoving = true;
 		}
+	}
+
+	// Client fallback: if position is changing but velocity reports zero,
+	// use position delta to drive animation (covers pathfinding replication)
+	if (!bMoving && !HasAuthority())
+	{
+		const FVector CurrentPos = GetActorLocation();
+		const float PosDelta = FVector::Dist2D(CurrentPos, LastClientPosition);
+		if (PosDelta > 5.0f)
+		{
+			Speed = PosDelta / FMath::Max(GetWorld()->GetDeltaSeconds(), 0.001f);
+			bMoving = Speed > 10.0f;
+		}
+		LastClientPosition = CurrentPos;
 	}
 
 	const bool bFalling = GetCharacterMovement() ? GetCharacterMovement()->IsFalling() : false;
@@ -246,6 +259,21 @@ void ANPCCustomer::InitializeCustomer(FName InRequestedItemID, UShopInventoryCom
 	check(HasAuthority());
 	RequestedItemID = InRequestedItemID;
 	ShopInventory = InShopInventory;
+
+	// Cache display name for replication to clients
+	if (ShopInventory)
+	{
+		FShopItemInfo Info;
+		if (ShopInventory->GetItemInfo(RequestedItemID, Info))
+		{
+			Rep_DisplayName = Info.DisplayName.ToString();
+		}
+	}
+	if (Rep_DisplayName.IsEmpty())
+	{
+		Rep_DisplayName = RequestedItemID.ToString();
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("NPC %s initialized - wants: %s"), *GetName(), *RequestedItemID.ToString());
 }
 
@@ -615,6 +643,20 @@ void ANPCCustomer::UpdateRequestWidget()
 {
 	if (!RequestTextWidget) return;
 
+	// States with custom widget text - don't overwrite
+	if (CurrentState == ENPCCustomerState::Browsing)
+	{
+		SetWidgetText(NSLOCTEXT("Shop", "Browsing", "Looking around..."));
+		return;
+	}
+	if (CurrentState == ENPCCustomerState::WaitingInShop)
+	{
+		// Widget hidden during waiting, but if called, show item
+		FText ItemName = GetRequestedItemDisplayName();
+		SetWidgetText(ItemName);
+		return;
+	}
+
 	FText ItemName = GetRequestedItemDisplayName();
 
 	// Build display text based on state
@@ -640,7 +682,6 @@ void ANPCCustomer::UpdateRequestWidget()
 	}
 	else
 	{
-		// Just the item name
 		DisplayText = ItemName;
 	}
 
@@ -657,6 +698,13 @@ void ANPCCustomer::SetWidgetText(const FText& Text)
 
 FText ANPCCustomer::GetRequestedItemDisplayName() const
 {
+	// Use replicated display name (works on both server and client)
+	if (!Rep_DisplayName.IsEmpty())
+	{
+		return FText::FromString(Rep_DisplayName);
+	}
+
+	// Fallback: try ShopInventory (server only)
 	if (ShopInventory)
 	{
 		FShopItemInfo Info;
